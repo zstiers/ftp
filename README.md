@@ -1,9 +1,7 @@
 # FTP
----
 FTP is a header only C++ Fast Thread Pool implementation.
 
 ## Features
----
   - Faster than anything I could find
   - Full C\++11 compliance and depends only on C++11 compliant headers
   - Header only and depends only on headers allowing easy integration
@@ -14,22 +12,18 @@ FTP is a header only C++ Fast Thread Pool implementation.
   - Permissive liscensing on this and all dependent libraries
 
 ## Reasons to use
----
 You have many tasks that can be run over multiple threads and don't want to write scheduling code yourself and would instead just push tasks into a prebuilt pool.
 
 ## Reasons not to use
----
 You are looking for something mature and fully tested. If you are willing to notify me of found issues I will try to resolve any problems though.
 
 ## Example usage
----
 ```c++
 fpt::ThreadPool pool(4); // Make a pool with 4 threads
 pool.Push(std::bind(printf, "Hello World!\n"));
 ```
 
 ## Credits
----
   - [moodycamel::ConcurrentQueue] is used internally. The header is included and must copied as part of bringing this into your project.
   - [CTPL] was used as inspiration in writing this
   
