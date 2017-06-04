@@ -54,21 +54,21 @@ namespace ftp
             // See if we can take anything. If the value is zero we have nothing we can pop,
             // but if the value is non-zero and we successfully subtract from it then we can
             // pop.
-            for (std::size_t oldValue = -1; !m_taskCount.compare_exchange_weak(oldValue, oldValue - 1, std::memory_order_relaxed, std::memory_order_relaxed);)
+            for (std::size_t oldValue = m_taskCount.load(); oldValue;)
             {
-                if (!oldValue)
-                    return false;
+                if (m_taskCount.compare_exchange_weak(oldValue, oldValue - 1, std::memory_order_relaxed, std::memory_order_relaxed))
+                {
+                    // Because of the way the concurrent queue talks between threads
+                    // the queued data might not have been immediate. In this case we
+                    // will wait. We know it has something for us.
+                    for (;;)
+                    {
+                        if (m_queue.try_dequeue(out))
+                            return true;
+                    }
+                }
             }
-
-            // Because of the way the concurrent queue talks between threads
-            // the queued data might not have been immediate. In this case we
-            // will wait. We know it has something for us.
-            for (;;)
-            {
-                if (m_queue.try_dequeue(out))
-                    break;
-            }
-            return true;
+            return false;
         }
 
         FuncType Pop ()
