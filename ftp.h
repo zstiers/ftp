@@ -33,7 +33,7 @@ namespace ftp
         std::atomic<std::size_t>                                m_waiting = 0;
         std::vector<std::shared_ptr<std::atomic<WorkBehavior>>> m_workBehavior;
 
-    public:
+    public: // Ctor & Dtor
         ThreadPool (std::size_t startingCount = 0, ThreadInitializer * threadInitializer = nullptr) :
             m_initializer(threadInitializer)
         {
@@ -44,11 +44,8 @@ namespace ftp
         {
             Stop();
         }
-
-    public:
-        std::size_t GetThreadCount () const { return m_threads.size(); }
-
-    public:
+        
+    public: // Commands
         bool Pop (FuncType & out)
         {
             // See if we can take anything. If the value is zero we have nothing we can pop,
@@ -84,10 +81,9 @@ namespace ftp
             OnEnqueue(1);
             return success;
         }
-        
+
         // Pushes several items.
 	    // Note: Use std::make_move_iterator if the elements should be moved instead of copied.
-	    // Thread-safe.
 	    template<typename It>
 	    bool Push (It itemFirst, size_t count)
         {
@@ -96,13 +92,6 @@ namespace ftp
             return success;
         }
 
-    public:
-        void Stop ()
-        {
-            Resize(0, WorkBehavior::COMPLETE, RemoveBehavior::JOIN, nullptr);
-        }
-
-    public:
         void Resize (std::size_t newCount, WorkBehavior workBehavior, RemoveBehavior removeBehavior, std::vector<std::thread> * removed)
         {
             if (newCount < 0)
@@ -129,8 +118,7 @@ namespace ftp
 
                 // Need to very briefly lock the mutex to make sure no threads are
                 // in race conditions from not seeing the running state update yet.
-                m_mutex.lock();
-                m_mutex.unlock();
+                LockTemp();
 
                 // Notification is to allow the destroyed threads to close themselves out.
                 m_cv.notify_all();
@@ -150,23 +138,67 @@ namespace ftp
             }
         }
 
-    private:
+        void Stop ()
+        {
+            Resize(0, WorkBehavior::COMPLETE, RemoveBehavior::JOIN, nullptr);
+        }
+
+    public: // Queries
+        std::size_t GetThreadCount () const { return m_threads.size(); }
+
+    private: // Internal helpers
+        void LockTemp ()
+        {
+            // There are a number of cases we don't really need a lock, but
+            // do need to temporarily make sure nothing else has it. This is
+            // used in cases that we have invalidated variables checked inside
+            // locks and need to wait before firing notifications because of this.
+            m_mutex.lock();
+            m_mutex.unlock();
+        }
+
         void OnEnqueue (std::size_t count)
         {
             m_taskCount.fetch_add(count, std::memory_order_relaxed);
 
-            // This may look a little weird, but this works. This elimates a race condition
-            // where we might be in the process of trying to put a thread to sleep at the
-            // same time as waking up another by forcing this thread to wait until the thread
-            // is actually asleep before sending the notification.
-            if (m_waiting.load(std::memory_order_acquire) == 1)
-                std::lock_guard<std::mutex> lock(m_mutex);
-
-            // Determine how much we need to notify.
+            // Before notification we have to check if the number waiting is
+            // equal to the count, clamped to the maximum number of threads,
+            // and temporarily lock our mutex if so. This is because it is possible
+            // for one thread to not wake up if we don't do this as it could
+            // be currently running checks we just invalidated.
+            auto numWaiting = m_waiting.load(std::memory_order_acquire);
             if (count == 1)
+            {
+                if (numWaiting == 1)
+                    LockTemp();
                 m_cv.notify_one();
+            }
             else
+            {
                 m_cv.notify_all();
+
+                // Similar test to the branch above. This though clamps to the
+                // thread count. We notify all before this test followed by a
+                // single notify because letting the other threads start on work
+                // before we do this is helpful.
+                auto threadCount = GetThreadCount();
+                if (numWaiting == (count <= threadCount ? count : threadCount))
+                {
+                    LockTemp();
+                    m_cv.notify_one();
+                }
+            }
+        }
+
+        void StartThread (std::size_t threadIndex)
+        {
+            std::shared_ptr<std::atomic<WorkBehavior>> workBehavior = m_workBehavior[threadIndex]; // Take a copy
+            auto f = [this, threadIndex, workBehavior]() {
+                if (m_initializer) m_initializer->OnStart(threadIndex);
+                ThreadLoop(*workBehavior);
+                if (m_initializer) m_initializer->OnStop(threadIndex);
+            };
+            m_threads[threadIndex] = std::thread(f);
         }
 
         void ThreadLoop (std::atomic<WorkBehavior> & workBehavior)
@@ -198,17 +230,6 @@ namespace ftp
                 if (!hasWork)
                     return;
             }
-        }
-
-        void StartThread (std::size_t threadIndex)
-        {
-            std::shared_ptr<std::atomic<WorkBehavior>> workBehavior = m_workBehavior[threadIndex]; // Take a copy
-            auto f = [this, threadIndex, workBehavior]() {
-                if (m_initializer) m_initializer->OnStart(threadIndex);
-                ThreadLoop(*workBehavior);
-                if (m_initializer) m_initializer->OnStop(threadIndex);
-            };
-            m_threads[threadIndex] = std::thread(f);
         }
     };
 } // namespace ftp
