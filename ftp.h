@@ -4,7 +4,6 @@
 #include "ext\concurrentqueue\concurrentqueue.h"
 #include <atomic>
 #include <condition_variable>
-#include <functional>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -21,13 +20,13 @@ namespace ftp
     enum class RemoveBehavior { DETATCH, JOIN, NONE, };
     enum class WorkBehavior   { STOP, COMPLETE, CONTINUE, };
 
+    template <typename TaskType>
     class ThreadPool
     {
-        typedef std::function<void()> FuncType;
         std::condition_variable                                 m_cv;
         ThreadInitializer *                                     m_initializer = nullptr;
         std::mutex                                              m_mutex;
-        moodycamel::ConcurrentQueue<FuncType>                   m_queue;
+        moodycamel::ConcurrentQueue<TaskType>                   m_queue;
         std::atomic<std::size_t>                                m_taskCount = 0;
         std::vector<std::thread>                                m_threads;
         std::atomic<std::size_t>                                m_waiting = 0;
@@ -46,7 +45,7 @@ namespace ftp
         }
         
     public: // Commands
-        bool Pop (FuncType & out)
+        bool Pop (TaskType & out)
         {
             // See if we can take anything. If the value is zero we have nothing we can pop,
             // but if the value is non-zero and we successfully subtract from it then we can
@@ -68,16 +67,16 @@ namespace ftp
             return false;
         }
 
-        bool Push (const FuncType & func)
+        bool Push (const TaskType & task)
         {
-            const bool success = m_queue.enqueue(func);
+            const bool success = m_queue.enqueue(task);
             OnEnqueue(1);
             return success;
         }
 
-        bool Push (FuncType && func)
+        bool Push (TaskType && task)
         {
-            const bool success = m_queue.enqueue(std::forward<FuncType>(func));
+            const bool success = m_queue.enqueue(std::forward<TaskType>(task));
             OnEnqueue(1);
             return success;
         }
@@ -204,7 +203,7 @@ namespace ftp
         void ThreadLoop (std::atomic<WorkBehavior> & workBehavior)
         {
             // Variables we are going to reuse.
-            FuncType func;
+            TaskType func;
             bool hasWork = Pop(func);
             const auto cvFunc = [this, &func, &hasWork, &workBehavior]() {
                 hasWork = Pop(func);
