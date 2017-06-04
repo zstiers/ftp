@@ -71,25 +71,29 @@ namespace ftp
             return false;
         }
 
-        FuncType Pop ()
+        bool Push (const FuncType & func)
         {
-            FuncType func;
-            Pop(func);
-            return func;
+            const bool success = m_queue.enqueue(func);
+            OnEnqueue(1);
+            return success;
         }
 
-        void Push (FuncType && func)
+        bool Push (FuncType && func)
         {
-            m_queue.enqueue(func);
-            m_taskCount.fetch_add(1, std::memory_order_relaxed);
-
-            // This may look a little weird, but this works. This elimates a race condition
-            // where we might be in the process of trying to put a thread to sleep at the
-            // same time as waking up another by forcing this thread to wait until the thread
-            // is actually asleep before sending the notification.
-            if (m_waiting.load(std::memory_order_acquire) == 1)
-                std::lock_guard<std::mutex> lock(m_mutex);
-            m_cv.notify_one();
+            const bool success = m_queue.enqueue(std::forward<FuncType>(func));
+            OnEnqueue(1);
+            return success;
+        }
+        
+        // Pushes several items.
+	    // Note: Use std::make_move_iterator if the elements should be moved instead of copied.
+	    // Thread-safe.
+	    template<typename It>
+	    bool Push (It itemFirst, size_t count)
+        {
+            const bool success = m_queue.enqueue_bulk(itemFirst, count);
+            OnEnqueue(count);
+            return success;
         }
 
     public:
@@ -147,6 +151,24 @@ namespace ftp
         }
 
     private:
+        void OnEnqueue (std::size_t count)
+        {
+            m_taskCount.fetch_add(count, std::memory_order_relaxed);
+
+            // This may look a little weird, but this works. This elimates a race condition
+            // where we might be in the process of trying to put a thread to sleep at the
+            // same time as waking up another by forcing this thread to wait until the thread
+            // is actually asleep before sending the notification.
+            if (m_waiting.load(std::memory_order_acquire) == 1)
+                std::lock_guard<std::mutex> lock(m_mutex);
+
+            // Determine how much we need to notify.
+            if (count == 1)
+                m_cv.notify_one();
+            else
+                m_cv.notify_all();
+        }
+
         void ThreadLoop (std::atomic<WorkBehavior> & workBehavior)
         {
             // Variables we are going to reuse.
