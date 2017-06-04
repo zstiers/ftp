@@ -45,6 +45,12 @@ namespace ftp
         }
         
     public: // Commands
+        // This function is not thread safe because Resize is not thread safe.
+        void Grow (std::size_t growBy)
+        {
+            Resize(GetThreadCount() + growBy, WorkBehavior::CONTINUE, RemoveBehavior::JOIN, nullptr);
+        }
+
         bool Pop (TaskType & out)
         {
             // See if we can take anything. If the value is zero we have nothing we can pop,
@@ -90,7 +96,8 @@ namespace ftp
             OnEnqueue(count);
             return success;
         }
-
+        
+        // This function is not thread safe.
         void Resize (std::size_t newCount, WorkBehavior workBehavior, RemoveBehavior removeBehavior, std::vector<std::thread> * removed)
         {
             if (newCount < 0)
@@ -136,7 +143,8 @@ namespace ftp
                 m_threads.resize(newCount);
             }
         }
-
+        
+        // This function is not thread safe because Resize is not thread safe.
         void Stop ()
         {
             Resize(0, WorkBehavior::COMPLETE, RemoveBehavior::JOIN, nullptr);
