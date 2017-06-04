@@ -19,7 +19,7 @@ You are looking for something mature and fully tested. If you are willing to not
 
 ## Example usage
 ```c++
-fpt::ThreadPool pool(4); // Make a pool with 4 threads
+fpt::ThreadPool<std::function<void()>> pool(4); // Make a pool with 4 threads
 pool.Push(std::bind(printf, "Hello World!\n"));
 ```
 
