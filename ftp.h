@@ -23,14 +23,15 @@ namespace ftp
     template <typename TaskType>
     class ThreadPool
     {
-        std::condition_variable                                 m_cv;
-        ThreadInitializer *                                     m_initializer = nullptr;
-        std::mutex                                              m_mutex;
-        moodycamel::ConcurrentQueue<TaskType>                   m_queue;
-        std::atomic<std::size_t>                                m_taskCount = 0;
-        std::vector<std::thread>                                m_threads;
-        std::atomic<std::size_t>                                m_waiting = 0;
-        std::vector<std::shared_ptr<std::atomic<WorkBehavior>>> m_workBehavior;
+        typedef moodycamel::ConcurrentQueue<TaskType> Queue;
+
+        std::condition_variable                  m_cv;
+        ThreadInitializer *                      m_initializer = nullptr;
+        std::mutex                               m_mutex;
+        Queue                                    m_queue;
+        std::vector<std::thread>                 m_threads;
+        std::atomic<std::size_t>                 m_waiting = 0;
+        std::vector<std::atomic<WorkBehavior> *> m_workBehavior;
 
     public: // Ctor & Dtor
         ThreadPool (std::size_t startingCount = 0, ThreadInitializer * threadInitializer = nullptr) :
@@ -53,24 +54,7 @@ namespace ftp
 
         bool Pop (TaskType & out)
         {
-            // See if we can take anything. If the value is zero we have nothing we can pop,
-            // but if the value is non-zero and we successfully subtract from it then we can
-            // pop.
-            for (std::size_t oldValue = m_taskCount.load(); oldValue;)
-            {
-                if (m_taskCount.compare_exchange_weak(oldValue, oldValue - 1, std::memory_order_relaxed, std::memory_order_relaxed))
-                {
-                    // Because of the way the concurrent queue talks between threads
-                    // the queued data might not have been immediate. In this case we
-                    // will wait. We know it has something for us.
-                    for (;;)
-                    {
-                        if (m_queue.try_dequeue(out))
-                            return true;
-                    }
-                }
-            }
-            return false;
+            return m_queue.try_dequeue(out);
         }
 
         bool Push (const TaskType & task)
@@ -107,13 +91,14 @@ namespace ftp
             if (newCount > oldCount)
             {
                 // Need to create the new threads.
-                m_workBehavior.resize(newCount);
+                m_workBehavior.resize(newCount, nullptr);
                 m_threads.resize(newCount);
                 for (std::size_t i = oldCount; i < newCount; ++i)
-                {
-                    m_workBehavior[i] = std::make_shared<std::atomic<WorkBehavior>>(WorkBehavior::CONTINUE);
                     StartThread(i);
-                }
+
+                // Wait for all threads to be registered.
+                for (std::size_t i = oldCount; i < newCount; ++i)
+                    while(!IsThreadRegistered(i));
             }
             else if (oldCount > newCount)
             {
@@ -154,6 +139,12 @@ namespace ftp
         std::size_t GetThreadCount () const { return m_threads.size(); }
 
     private: // Internal helpers
+        // This function can only safely be called while Resize is waiting on these results.
+        bool IsThreadRegistered (std::size_t threadIndex)
+        {
+            return m_workBehavior[threadIndex] != nullptr;
+        }
+
         void LockTemp ()
         {
             // There are a number of cases we don't really need a lock, but
@@ -166,8 +157,6 @@ namespace ftp
 
         void OnEnqueue (std::size_t count)
         {
-            m_taskCount.fetch_add(count, std::memory_order_relaxed);
-
             // Before notification we have to check if the number waiting is
             // equal to the count, clamped to the maximum number of threads,
             // and temporarily lock our mutex if so. This is because it is possible
@@ -197,19 +186,28 @@ namespace ftp
             }
         }
 
+        // This function can only safely be called while Resize is waiting on these results.
+        void RegisterThread(std::size_t threadIndex, std::atomic<WorkBehavior> * workBehavior)
+        {
+            m_workBehavior[threadIndex] = workBehavior;
+        }
+
         void StartThread (std::size_t threadIndex)
         {
-            std::shared_ptr<std::atomic<WorkBehavior>> workBehavior = m_workBehavior[threadIndex]; // Take a copy
-            auto f = [this, threadIndex, workBehavior]() {
+            auto f = [this, threadIndex]() {
                 if (m_initializer) m_initializer->OnStart(threadIndex);
-                ThreadLoop(*workBehavior);
+                ThreadLoop(threadIndex);
                 if (m_initializer) m_initializer->OnStop(threadIndex);
             };
             m_threads[threadIndex] = std::thread(f);
         }
 
-        void ThreadLoop (std::atomic<WorkBehavior> & workBehavior)
+        void ThreadLoop (std::size_t threadIndex)
         {
+            // Variables that need to be pushed to the pool
+            std::atomic<WorkBehavior> workBehavior = WorkBehavior::CONTINUE;
+            RegisterThread(threadIndex, &workBehavior);
+
             // Variables we are going to reuse.
             TaskType func;
             bool hasWork = Pop(func);
