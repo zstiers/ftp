@@ -227,9 +227,11 @@ namespace ftp
                 }
 
                 // the queue is empty here, wait for the next command
-                std::unique_lock<std::mutex> lock(m_mutex);
                 m_waiting.fetch_add(1, std::memory_order_release);
-                m_cv.wait(lock, cvFunc);
+                {
+                    std::unique_lock<std::mutex> lock(m_mutex);
+                    m_cv.wait(lock, cvFunc);
+                }
                 m_waiting.fetch_sub(1, std::memory_order_relaxed);
 
                 if (!hasWork)
