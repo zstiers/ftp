@@ -163,6 +163,9 @@ namespace ftp
             // for one thread to not wake up if we don't do this as it could
             // be currently running checks we just invalidated.
             auto numWaiting = m_waiting.load(std::memory_order_acquire);
+            if (numWaiting == 0)
+                return;
+
             if (count == 1)
             {
                 if (numWaiting == 1)
