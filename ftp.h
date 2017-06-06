@@ -25,13 +25,18 @@ namespace ftp
     {
         typedef moodycamel::ConcurrentQueue<TaskType> Queue;
 
-        std::condition_variable                  m_cv;
-        ThreadInitializer *                      m_initializer = nullptr;
-        std::mutex                               m_mutex;
-        Queue                                    m_queue;
-        std::vector<std::thread>                 m_threads;
-        std::atomic<std::size_t>                 m_waiting = 0;
-        std::vector<std::atomic<WorkBehavior> *> m_workBehavior;
+        struct ThreadData
+        {
+            std::atomic<WorkBehavior> workBehavior = WorkBehavior::CONTINUE;
+        };
+
+        std::condition_variable   m_cv;
+        ThreadInitializer *       m_initializer;
+        std::mutex                m_mutex;
+        Queue                     m_queue;
+        std::vector<ThreadData *> m_threadData;
+        std::vector<std::thread>  m_threads;
+        std::atomic<std::size_t>  m_waiting = 0;
 
     public: // Ctor & Dtor
         ThreadPool (std::size_t startingCount = 0, ThreadInitializer * threadInitializer = nullptr) :
@@ -91,7 +96,7 @@ namespace ftp
             if (newCount > oldCount)
             {
                 // Need to create the new threads.
-                m_workBehavior.resize(newCount, nullptr);
+                m_threadData.resize(newCount, nullptr);
                 m_threads.resize(newCount);
                 for (std::size_t i = oldCount; i < newCount; ++i)
                     StartThread(i);
@@ -104,8 +109,8 @@ namespace ftp
             {
                 // Tell the old threads they are done.
                 for (std::size_t i = newCount; i < oldCount; ++i)
-                    *m_workBehavior[i] = workBehavior;
-                m_workBehavior.resize(newCount);
+                    m_threadData[i]->workBehavior = workBehavior;
+                m_threadData.resize(newCount);
 
                 // Need to very briefly lock the mutex to make sure no threads are
                 // in race conditions from not seeing the running state update yet.
@@ -142,7 +147,7 @@ namespace ftp
         // This function can only safely be called while Resize is waiting on these results.
         bool IsThreadRegistered (std::size_t threadIndex)
         {
-            return m_workBehavior[threadIndex] != nullptr;
+            return m_threadData[threadIndex] != nullptr;
         }
 
         void LockTemp ()
@@ -190,9 +195,9 @@ namespace ftp
         }
 
         // This function can only safely be called while Resize is waiting on these results.
-        void RegisterThread(std::size_t threadIndex, std::atomic<WorkBehavior> * workBehavior)
+        void RegisterThread (std::size_t threadIndex, ThreadData * threadData)
         {
-            m_workBehavior[threadIndex] = workBehavior;
+            m_threadData[threadIndex] = threadData;
         }
 
         void StartThread (std::size_t threadIndex)
@@ -208,22 +213,22 @@ namespace ftp
         void ThreadLoop (std::size_t threadIndex)
         {
             // Variables that need to be pushed to the pool
-            std::atomic<WorkBehavior> workBehavior = WorkBehavior::CONTINUE;
-            RegisterThread(threadIndex, &workBehavior);
+            ThreadData td;
+            RegisterThread(threadIndex, &td);
 
             // Variables we are going to reuse.
             TaskType func;
             bool hasWork = Pop(func);
-            const auto cvFunc = [this, &func, &hasWork, &workBehavior]() {
+            const auto cvFunc = [this, &func, &hasWork, &td]() {
                 hasWork = Pop(func);
-                return hasWork || workBehavior.load(std::memory_order_relaxed) != WorkBehavior::CONTINUE;
+                return hasWork || td.workBehavior.load(std::memory_order_relaxed) != WorkBehavior::CONTINUE;
             };
 
             for (;;) {
                 while (hasWork) {
                     func();
 
-                    if (workBehavior.load(std::memory_order_relaxed) != WorkBehavior::STOP)
+                    if (td.workBehavior.load(std::memory_order_relaxed) != WorkBehavior::STOP)
                         hasWork = Pop(func);
                     else
                         return;
