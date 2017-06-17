@@ -132,6 +132,12 @@ namespace ftp
                 }
                 m_threads.resize(newCount);
             }
+
+            // Lock temp and then notify all because we didn't synchronize access to
+            // the number of threads some logic should have come out wrong. Fire again
+            // just to be safe.
+            LockTemp();
+            m_cv.notify_all();
         }
         
         // This function is not thread safe because Resize is not thread safe.
