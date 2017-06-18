@@ -173,7 +173,7 @@ namespace ftp
             // and temporarily lock our mutex if so. This is because it is possible
             // for one thread to not wake up if we don't do this as it could
             // be currently running checks we just invalidated.
-            auto numWaiting = m_waiting.load(std::memory_order_acquire);
+            const auto numWaiting = m_waiting.load(std::memory_order_acquire);
             if (numWaiting == 0)
                 return;
 
@@ -192,7 +192,7 @@ namespace ftp
                 // single notify because letting the other threads start on work
                 // before we do this is helpful.
                 auto threadCount = GetThreadCount();
-                if (numWaiting == (count <= threadCount ? count : threadCount))
+                if (numWaiting == (count < threadCount ? count : threadCount))
                 {
                     LockTemp();
                     m_cv.notify_one();
@@ -241,12 +241,12 @@ namespace ftp
                 }
 
                 // the queue is empty here, wait for the next command
-                m_waiting.fetch_add(1, std::memory_order_release);
                 {
                     std::unique_lock<std::mutex> lock(m_mutex);
+                    m_waiting.fetch_add(1, std::memory_order_release);
                     m_cv.wait(lock, cvFunc);
+                    m_waiting.fetch_sub(1, std::memory_order_release);
                 }
-                m_waiting.fetch_sub(1, std::memory_order_relaxed);
 
                 if (!hasWork)
                     return;
