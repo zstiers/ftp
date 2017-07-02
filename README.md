@@ -15,6 +15,7 @@ FTP is a header only C++ Fast Thread Pool implementation.
   - Extensive testing
   - Expose control over dynamic memory allocations
   - Provide access to the better performing internal queue functions
+  - Support for futures
 
 ## Reasons to use
 You have many tasks that can be run over multiple threads and don't want to write scheduling code yourself and would instead just push tasks into a prebuilt pool.
